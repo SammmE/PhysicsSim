@@ -4,6 +4,7 @@ mod renderer;
 use egui_plot::{Line, Plot, PlotPoints};
 use engine::ParticleSystem;
 use renderer::ParticleRenderer;
+use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use winit::{
     event::*,
@@ -11,6 +12,37 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowBuilder},
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SimulationConfig {
+    gravity: [f32; 2],
+    particle_mass: f32,
+    target_tps: f32,
+    target_fps: f32,
+    show_velocity_vectors: bool,
+    show_acceleration_vectors: bool,
+    vector_display_multiplier: f32,
+    walls_enabled: bool,
+    wall_bounce: bool,
+    max_particles: usize,
+}
+
+impl Default for SimulationConfig {
+    fn default() -> Self {
+        Self {
+            gravity: [0.0, -9.80665], // Standard Earth gravity in m/s²
+            particle_mass: 0.1,       // 100 grams in kg
+            target_tps: 60.0,
+            target_fps: 60.0,
+            show_velocity_vectors: false,
+            show_acceleration_vectors: false,
+            vector_display_multiplier: 0.5,
+            walls_enabled: true,
+            wall_bounce: false,
+            max_particles: 10000,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct GraphData {
@@ -22,6 +54,7 @@ struct GraphData {
     pub acceleration_x: Vec<f32>,
     pub acceleration_y: Vec<f32>,
     pub max_points: usize,
+    pub last_update_time: f32,
 }
 
 impl GraphData {
@@ -35,6 +68,7 @@ impl GraphData {
             acceleration_x: Vec::with_capacity(max_points),
             acceleration_y: Vec::with_capacity(max_points),
             max_points,
+            last_update_time: 0.0,
         }
     }
 
@@ -48,8 +82,15 @@ impl GraphData {
         acc_x: f32,
         acc_y: f32,
     ) {
+        // Only add points if enough time has passed to avoid overwhelming the graph
+        if time - self.last_update_time < 0.016 && !self.time.is_empty() {
+            return;
+        }
+
+        self.last_update_time = time;
+
         if self.time.len() >= self.max_points {
-            // Remove oldest point
+            // Remove oldest point efficiently
             self.time.remove(0);
             self.displacement_x.remove(0);
             self.displacement_y.remove(0);
@@ -76,7 +117,57 @@ impl GraphData {
         self.velocity_y.clear();
         self.acceleration_x.clear();
         self.acceleration_y.clear();
+        self.last_update_time = 0.0;
     }
+
+    pub fn get_stats(&self) -> GraphStats {
+        if self.time.is_empty() {
+            return GraphStats::default();
+        }
+
+        let vel_mag: Vec<f32> = self
+            .velocity_x
+            .iter()
+            .zip(self.velocity_y.iter())
+            .map(|(vx, vy)| (vx * vx + vy * vy).sqrt())
+            .collect();
+
+        let acc_mag: Vec<f32> = self
+            .acceleration_x
+            .iter()
+            .zip(self.acceleration_y.iter())
+            .map(|(ax, ay)| (ax * ax + ay * ay).sqrt())
+            .collect();
+
+        GraphStats {
+            max_velocity: vel_mag.iter().fold(0.0f32, |a, &b| a.max(b)),
+            max_acceleration: acc_mag.iter().fold(0.0f32, |a, &b| a.max(b)),
+            total_distance: self.calculate_total_distance(),
+            duration: self.time.last().unwrap_or(&0.0) - self.time.first().unwrap_or(&0.0),
+        }
+    }
+
+    fn calculate_total_distance(&self) -> f32 {
+        if self.displacement_x.len() < 2 {
+            return 0.0;
+        }
+
+        let mut total = 0.0;
+        for i in 1..self.displacement_x.len() {
+            let dx = self.displacement_x[i] - self.displacement_x[i - 1];
+            let dy = self.displacement_y[i] - self.displacement_y[i - 1];
+            total += (dx * dx + dy * dy).sqrt();
+        }
+        total
+    }
+}
+
+#[derive(Debug, Default)]
+struct GraphStats {
+    max_velocity: f32,
+    max_acceleration: f32,
+    total_distance: f32,
+    duration: f32,
 }
 
 struct App {
@@ -92,6 +183,9 @@ struct App {
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
     last_update: Instant,
+
+    // Configuration
+    config_data: SimulationConfig,
 
     // UI state
     gravity: [f32; 2],
@@ -109,6 +203,13 @@ struct App {
     uniforms_dirty: bool,
     max_ticks_per_frame: u32,
 
+    // Performance monitoring
+    render_time: f32,
+    update_time: f32,
+    physics_time: f32,
+    ui_time: f32,
+    memory_usage: usize,
+
     // Vector visualization
     show_velocity_vectors: bool,
     show_acceleration_vectors: bool,
@@ -125,10 +226,19 @@ struct App {
     simulation_paused: bool,
     drag_preview_vector: Option<[f32; 2]>,
 
+    // Enhanced mouse controls
+    mouse_sensitivity: f32,
+    scroll_zoom: f32,
+    camera_offset: [f32; 2],
+
     // Boundary system
     walls_enabled: bool,
     wall_bounce: bool,
     world_bounds: [f32; 4], // left, right, bottom, top
+
+    // Enhanced boundary options
+    wall_damping: f32,
+    gravity_strength: f32,
 
     // Particle graphing system
     selected_particle_index: Option<usize>,
@@ -229,8 +339,9 @@ impl App {
             egui_state,
             egui_renderer,
             last_update: Instant::now(),
-            gravity: [0.0, -98.0],
-            particle_mass: 1.0,
+            config_data: SimulationConfig::default(),
+            gravity: [0.0, -9.80665], // Standard Earth gravity in m/s²
+            particle_mass: 0.1,       // 100 grams in kg
             spawn_position: [0.0, 0.0],
             target_tps: 60.0,
             tick_accumulator: 0.0,
@@ -239,6 +350,11 @@ impl App {
             current_fps: 0.0,
             uniforms_dirty: true,
             max_ticks_per_frame: 10,
+            render_time: 0.0,
+            update_time: 0.0,
+            physics_time: 0.0,
+            ui_time: 0.0,
+            memory_usage: 0,
             show_velocity_vectors: false,
             show_acceleration_vectors: false,
             vector_display_multiplier: 0.5,
@@ -249,9 +365,14 @@ impl App {
             drag_button: None,
             simulation_paused: false,
             drag_preview_vector: None,
+            mouse_sensitivity: 1.0,
+            scroll_zoom: 1.0,
+            camera_offset: [0.0, 0.0],
             walls_enabled: true,
             wall_bounce: false,
             world_bounds: Self::calculate_world_bounds(size),
+            wall_damping: 0.8,
+            gravity_strength: 1.0,
             selected_particle_index: None,
             graph_data: GraphData::new(1000), // Store last 1000 data points
             simulation_time: 0.0,
@@ -262,12 +383,14 @@ impl App {
 
     fn calculate_world_bounds(size: winit::dpi::PhysicalSize<u32>) -> [f32; 4] {
         let aspect = size.width as f32 / size.height as f32;
-        let scale = 0.01;
+        // Create a world space of approximately 20m wide x 15m tall
+        let world_height = 15.0; // meters
+        let world_width = world_height * aspect;
 
-        let left = -aspect / scale;
-        let right = aspect / scale;
-        let bottom = -1.0 / scale;
-        let top = 1.0 / scale;
+        let left = -world_width / 2.0;
+        let right = world_width / 2.0;
+        let bottom = -world_height / 2.0;
+        let top = world_height / 2.0;
 
         [left, right, bottom, top]
     }
@@ -310,6 +433,34 @@ impl App {
         self.graph_data.clear();
     }
 
+    fn calculate_plot_bounds(data: &[f32]) -> (f64, f64) {
+        if data.is_empty() {
+            return (-1.0, 1.0);
+        }
+
+        let min_val = data.iter().fold(f32::INFINITY, |a, &b| a.min(b)) as f64;
+        let max_val = data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b)) as f64;
+
+        // Add 10% padding to make data visible
+        let range = (max_val - min_val).max(0.1); // Minimum range of 0.1
+        let padding = range * 0.1;
+
+        (min_val - padding, max_val + padding)
+    }
+
+    fn calculate_time_bounds(&self) -> (f64, f64) {
+        if self.graph_data.time.is_empty() {
+            return (0.0, 1.0);
+        }
+
+        let min_time = *self.graph_data.time.first().unwrap() as f64;
+        let max_time = *self.graph_data.time.last().unwrap() as f64;
+        let range = (max_time - min_time).max(0.1);
+        let padding = range * 0.05; // 5% padding for time
+
+        (min_time - padding, max_time + padding)
+    }
+
     fn check_and_select_first_particle(&mut self) {
         // If we were waiting for the first particle after clearing, select it
         if self.waiting_for_first_particle && !self.particle_system.particles.is_empty() {
@@ -342,24 +493,9 @@ impl App {
     }
 
     fn input(&mut self, event: &WindowEvent) -> bool {
-        // Handle keyboard input first
-        if let WindowEvent::KeyboardInput {
-            event: key_event, ..
-        } = event
-        {
-            if key_event.state == ElementState::Pressed {
-                match key_event.physical_key {
-                    PhysicalKey::Code(KeyCode::Tab) => {
-                        self.select_next_particle();
-                        return true;
-                    }
-                    PhysicalKey::Code(KeyCode::Space) => {
-                        self.clear_graphs();
-                        return true;
-                    }
-                    _ => {}
-                }
-            }
+        // Handle enhanced keyboard shortcuts first
+        if self.add_keyboard_shortcuts(event) {
+            return true;
         }
 
         if let WindowEvent::MouseInput { state, button, .. } = event {
@@ -430,8 +566,14 @@ impl App {
         let screen_center_x = self.size.width as f32 / 2.0;
         let screen_center_y = self.size.height as f32 / 2.0;
 
-        let world_x = (screen_x - screen_center_x) / 5.0;
-        let world_y = (screen_center_y - screen_y) / 5.0;
+        // Convert screen coordinates to world coordinates in meters
+        // Assume the world is 20m wide (from world bounds calculation)
+        let aspect = self.size.width as f32 / self.size.height as f32;
+        let world_height = 15.0; // meters
+        let world_width = world_height * aspect;
+
+        let world_x = ((screen_x - screen_center_x) / screen_center_x) * (world_width / 2.0);
+        let world_y = ((screen_center_y - screen_y) / screen_center_y) * (world_height / 2.0);
 
         [world_x, world_y]
     }
@@ -531,8 +673,8 @@ impl App {
                     &self.particle_system.particles,
                     self.show_velocity_vectors,
                     self.show_acceleration_vectors,
-                    10.0 * self.vector_display_multiplier,
-                    1.0 * self.vector_display_multiplier,
+                    1.0 * self.vector_display_multiplier, // Velocity vectors: 1 meter per 1 m/s
+                    5.0 * self.vector_display_multiplier, // Acceleration vectors: 5 meters per 1 m/s²
                 );
             }
         }
@@ -573,15 +715,18 @@ impl App {
                     &preview_particle,
                     show_vel,
                     show_acc,
-                    10.0 * self.vector_display_multiplier,
-                    1.0 * self.vector_display_multiplier,
+                    1.0 * self.vector_display_multiplier, // Velocity vectors: 1 meter per 1 m/s
+                    5.0 * self.vector_display_multiplier, // Acceleration vectors: 5 meters per 1 m/s²
                 );
             }
         }
     }
 
     fn apply_gravity_batched(&mut self, dt: f32) {
-        let gravity_force = engine::Vector2f::new(self.gravity[0], self.gravity[1]);
+        let gravity_force = engine::Vector2f::new(
+            self.gravity[0] * self.gravity_strength,
+            self.gravity[1] * self.gravity_strength,
+        );
 
         for particle in &mut self.particle_system.particles {
             particle.apply_force(
@@ -601,7 +746,7 @@ impl App {
             if particle.position.x < left {
                 if self.wall_bounce {
                     particle.position.x = left;
-                    particle.velocity.x = -particle.velocity.x * 0.8;
+                    particle.velocity.x = -particle.velocity.x * self.wall_damping;
                 } else {
                     particle.position.x = left;
                     particle.velocity.x = 0.0;
@@ -609,7 +754,7 @@ impl App {
             } else if particle.position.x > right {
                 if self.wall_bounce {
                     particle.position.x = right;
-                    particle.velocity.x = -particle.velocity.x * 0.8;
+                    particle.velocity.x = -particle.velocity.x * self.wall_damping;
                 } else {
                     particle.position.x = right;
                     particle.velocity.x = 0.0;
@@ -619,7 +764,7 @@ impl App {
             if particle.position.y < bottom {
                 if self.wall_bounce {
                     particle.position.y = bottom;
-                    particle.velocity.y = -particle.velocity.y * 0.8;
+                    particle.velocity.y = -particle.velocity.y * self.wall_damping;
                 } else {
                     particle.position.y = bottom;
                     particle.velocity.y = 0.0;
@@ -627,13 +772,107 @@ impl App {
             } else if particle.position.y > top {
                 if self.wall_bounce {
                     particle.position.y = top;
-                    particle.velocity.y = -particle.velocity.y * 0.8;
+                    particle.velocity.y = -particle.velocity.y * self.wall_damping;
                 } else {
                     particle.position.y = top;
                     particle.velocity.y = 0.0;
                 }
             }
         }
+    }
+
+    fn save_config(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let config = SimulationConfig {
+            gravity: self.gravity,
+            particle_mass: self.particle_mass,
+            target_tps: self.target_tps,
+            target_fps: self.target_fps,
+            show_velocity_vectors: self.show_velocity_vectors,
+            show_acceleration_vectors: self.show_acceleration_vectors,
+            vector_display_multiplier: self.vector_display_multiplier,
+            walls_enabled: self.walls_enabled,
+            wall_bounce: self.wall_bounce,
+            max_particles: 10000, // Could be made configurable
+        };
+
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("JSON", &["json"])
+            .set_file_name("physics_config.json")
+            .save_file()
+        {
+            let json = serde_json::to_string_pretty(&config)?;
+            std::fs::write(path, json)?;
+        }
+        Ok(())
+    }
+
+    fn load_config(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("JSON", &["json"])
+            .pick_file()
+        {
+            let json = std::fs::read_to_string(path)?;
+            let config: SimulationConfig = serde_json::from_str(&json)?;
+
+            self.gravity = config.gravity;
+            self.particle_mass = config.particle_mass;
+            self.target_tps = config.target_tps;
+            self.target_fps = config.target_fps;
+            self.show_velocity_vectors = config.show_velocity_vectors;
+            self.show_acceleration_vectors = config.show_acceleration_vectors;
+            self.vector_display_multiplier = config.vector_display_multiplier;
+            self.walls_enabled = config.walls_enabled;
+            self.wall_bounce = config.wall_bounce;
+        }
+        Ok(())
+    }
+
+    fn update_performance_metrics(&mut self, frame_time: f32) {
+        self.render_time = frame_time;
+        self.memory_usage =
+            self.particle_system.particles.len() * std::mem::size_of::<engine::Particle>();
+    }
+
+    fn add_keyboard_shortcuts(&mut self, event: &WindowEvent) -> bool {
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = event
+        {
+            if key_event.state == ElementState::Pressed {
+                match key_event.physical_key {
+                    PhysicalKey::Code(KeyCode::Tab) => {
+                        self.select_next_particle();
+                        return true;
+                    }
+                    PhysicalKey::Code(KeyCode::Space) => {
+                        self.clear_graphs();
+                        return true;
+                    }
+                    PhysicalKey::Code(KeyCode::KeyP) => {
+                        self.simulation_paused = !self.simulation_paused;
+                        return true;
+                    }
+                    PhysicalKey::Code(KeyCode::KeyR) => {
+                        self.particle_system.clear();
+                        self.graph_data.clear();
+                        self.selected_particle_index = None;
+                        self.show_graphs = false;
+                        self.waiting_for_first_particle = false;
+                        return true;
+                    }
+                    PhysicalKey::Code(KeyCode::F1) => {
+                        let _ = self.save_config(); // F1 to save
+                        return true;
+                    }
+                    PhysicalKey::Code(KeyCode::F2) => {
+                        let _ = self.load_config(); // F2 to load
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        false
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -702,6 +941,17 @@ impl App {
         let mut new_walls_enabled = self.walls_enabled;
         let mut new_wall_bounce = self.wall_bounce;
 
+        // Get references to avoid borrowing issues in the closure
+        let current_fps = self.current_fps;
+        let memory_usage = self.memory_usage;
+        let render_time = self.render_time;
+        let particle_count = self.particle_system.particle_count();
+        let tick_accumulator = self.tick_accumulator;
+        let simulation_paused = self.simulation_paused;
+        let mut gravity_strength_local = self.gravity_strength;
+        let mut save_config_clicked = false;
+        let mut load_config_clicked = false;
+
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             // Calculate responsive sizes based on screen dimensions
@@ -741,34 +991,41 @@ impl App {
                     ui.strong("Physics Parameters");
 
                     ui.horizontal(|ui| {
-                        ui.label("Gravity:");
+                        ui.label("Gravity (m/s²):");
                         ui.add(
                             egui::DragValue::new(&mut new_gravity[0])
                                 .prefix("X: ")
-                                .speed(1.0),
+                                .suffix(" m/s²")
+                                .speed(0.1),
                         );
                         ui.add(
                             egui::DragValue::new(&mut new_gravity[1])
                                 .prefix("Y: ")
-                                .speed(1.0),
+                                .suffix(" m/s²")
+                                .speed(0.1),
                         );
                     });
 
                     ui.add(
-                        egui::Slider::new(&mut new_particle_mass, 0.1..=10.0).text("Particle Mass"),
+                        egui::Slider::new(&mut new_particle_mass, 0.001..=10.0)
+                            .text("Particle Mass (kg)")
+                            .suffix(" kg")
+                            .logarithmic(true),
                     );
 
                     ui.horizontal(|ui| {
-                        ui.label("Spawn Position:");
+                        ui.label("Spawn Position (m):");
                         ui.add(
                             egui::DragValue::new(&mut new_spawn_position[0])
                                 .prefix("X: ")
-                                .speed(1.0),
+                                .suffix(" m")
+                                .speed(0.1),
                         );
                         ui.add(
                             egui::DragValue::new(&mut new_spawn_position[1])
                                 .prefix("Y: ")
-                                .speed(1.0),
+                                .suffix(" m")
+                                .speed(0.1),
                         );
                     });
 
@@ -782,7 +1039,7 @@ impl App {
                             .text("Vector Display Scale")
                             .step_by(0.1),
                     );
-                    ui.small("Green: Velocity, Red: Acceleration");
+                    ui.small("Green: Velocity (m/s), Red: Acceleration (m/s²)");
 
                     ui.separator();
                     ui.strong("Boundary System");
@@ -792,6 +1049,10 @@ impl App {
                         new_walls_enabled,
                         egui::Checkbox::new(&mut new_wall_bounce, "Wall Bounce"),
                     );
+                    if new_walls_enabled && new_wall_bounce {
+                        // TODO: Add wall damping slider
+                        ui.small("Wall damping: 0.8 (configurable in future update)");
+                    }
                     if !new_walls_enabled {
                         ui.small("Particles can move freely");
                     } else if new_wall_bounce {
@@ -809,11 +1070,49 @@ impl App {
                         1000.0 / self.current_fps.max(1.0)
                     ));
                     ui.label(format!(
-                        "Active Particles: {}",
-                        self.particle_system.particle_count()
+                        "Memory Usage: {:.1}KB",
+                        self.memory_usage as f32 / 1024.0
                     ));
-                    ui.label(format!("Tick Accumulator: {:.4}s", self.tick_accumulator));
-                    if self.simulation_paused {
+                    ui.label(format!("Render Time: {:.2}ms", render_time * 1000.0));
+
+                    ui.separator();
+                    ui.strong("Enhanced Gravity");
+
+                    ui.add(
+                        egui::Slider::new(&mut gravity_strength_local, 0.0..=3.0)
+                            .text("Gravity Multiplier")
+                            .step_by(0.1),
+                    );
+                    ui.small("Multiplies gravity acceleration (Earth = 1.0)");
+
+                    ui.separator();
+                    ui.strong("Configuration");
+
+                    ui.horizontal(|ui| {
+                        if ui.button("💾 Save Config (F1)").clicked() {
+                            save_config_clicked = true;
+                        }
+                        if ui.button("📁 Load Config (F2)").clicked() {
+                            load_config_clicked = true;
+                        }
+                    });
+
+                    ui.separator();
+                    ui.strong("Performance Info");
+
+                    ui.label(format!("FPS: {:.1}", current_fps));
+                    ui.label(format!(
+                        "Frame Time: {:.2}ms",
+                        1000.0 / current_fps.max(1.0)
+                    ));
+                    ui.label(format!("Active Particles: {}", particle_count));
+                    ui.label(format!("Tick Accumulator: {:.4}s", tick_accumulator));
+                    ui.label(format!(
+                        "Memory Usage: {:.1}KB",
+                        memory_usage as f32 / 1024.0
+                    ));
+                    ui.label(format!("Render Time: {:.2}ms", render_time * 1000.0));
+                    if simulation_paused {
                         ui.label("🚫 SIMULATION PAUSED");
                     }
 
@@ -829,17 +1128,21 @@ impl App {
                     ui.small("Note: Clearing keeps graphs open for next particle");
 
                     ui.separator();
-                    ui.small("Mouse Controls:");
-                    ui.small("• Left drag: Set velocity vector (green preview)");
-                    ui.small("• Right drag: Set acceleration vector (red preview)");
-                    ui.small("• Simple click: Normal particle");
-                    ui.small("• Preview shows particle + vector while dragging");
-                    ui.separator();
                     ui.small("Keyboard Controls:");
                     ui.small("• Tab: Switch particle tracking");
                     ui.small("• Space: Clear graphs");
+                    ui.small("• P: Pause/Resume simulation");
+                    ui.small("• R: Reset everything");
+                    ui.small("• F1: Save configuration");
+                    ui.small("• F2: Load configuration");
                     ui.separator();
-                    ui.small("Walls are at screen edges");
+                    ui.small("Mouse Controls:");
+                    ui.small("• Left drag: Set velocity vector (m/s, green preview)");
+                    ui.small("• Right drag: Set acceleration vector (m/s², red preview)");
+                    ui.small("• Simple click: Normal particle");
+                    ui.small("• Preview shows particle + vector while dragging");
+                    ui.separator();
+                    ui.small("World space: ~20m × 15m, Earth gravity: 9.81 m/s²");
                 });
 
             // Particle graphs window
@@ -913,57 +1216,82 @@ impl App {
 
                             // Displacement plot
                             ui.separator();
-                            ui.strong("Displacement vs Time");
+                            ui.strong("Displacement vs Time (m)");
+                            let (time_min, time_max) = self.calculate_time_bounds();
+                            let (x_min, x_max) =
+                                Self::calculate_plot_bounds(&self.graph_data.displacement_x);
+                            let (y_min, y_max) =
+                                Self::calculate_plot_bounds(&self.graph_data.displacement_y);
                             Plot::new("displacement_plot")
-                                .view_aspect(2.0)
+                                .include_x(time_min)
+                                .include_x(time_max)
+                                .include_y(x_min.min(y_min))
+                                .include_y(x_max.max(y_max))
+                                .auto_bounds([true, true].into())
                                 .height(plot_height)
                                 .show(ui, |plot_ui| {
                                     plot_ui.line(
                                         Line::new(displacement_x_points)
-                                            .name("X Position")
+                                            .name("X Position (m)")
                                             .color(egui::Color32::from_rgb(255, 165, 0)), // Orange for X
                                     );
                                     plot_ui.line(
                                         Line::new(displacement_y_points)
-                                            .name("Y Position")
+                                            .name("Y Position (m)")
                                             .color(egui::Color32::from_rgb(0, 255, 255)), // Cyan for Y
                                     );
                                 });
 
                             // Velocity plot
                             ui.separator();
-                            ui.strong("Velocity vs Time");
+                            ui.strong("Velocity vs Time (m/s)");
+                            let (vx_min, vx_max) =
+                                Self::calculate_plot_bounds(&self.graph_data.velocity_x);
+                            let (vy_min, vy_max) =
+                                Self::calculate_plot_bounds(&self.graph_data.velocity_y);
                             Plot::new("velocity_plot")
-                                .view_aspect(2.0)
+                                .include_x(time_min)
+                                .include_x(time_max)
+                                .include_y(vx_min.min(vy_min))
+                                .include_y(vx_max.max(vy_max))
+                                .auto_bounds([true, true].into())
                                 .height(plot_height)
                                 .show(ui, |plot_ui| {
                                     plot_ui.line(
                                         Line::new(velocity_x_points)
-                                            .name("X Velocity")
+                                            .name("X Velocity (m/s)")
                                             .color(egui::Color32::from_rgb(255, 165, 0)), // Orange for X
                                     );
                                     plot_ui.line(
                                         Line::new(velocity_y_points)
-                                            .name("Y Velocity")
+                                            .name("Y Velocity (m/s)")
                                             .color(egui::Color32::from_rgb(0, 255, 255)), // Cyan for Y
                                     );
                                 });
 
                             // Acceleration plot
                             ui.separator();
-                            ui.strong("Acceleration vs Time");
+                            ui.strong("Acceleration vs Time (m/s²)");
+                            let (ax_min, ax_max) =
+                                Self::calculate_plot_bounds(&self.graph_data.acceleration_x);
+                            let (ay_min, ay_max) =
+                                Self::calculate_plot_bounds(&self.graph_data.acceleration_y);
                             Plot::new("acceleration_plot")
-                                .view_aspect(2.0)
+                                .include_x(time_min)
+                                .include_x(time_max)
+                                .include_y(ax_min.min(ay_min))
+                                .include_y(ax_max.max(ay_max))
+                                .auto_bounds([true, true].into())
                                 .height(plot_height)
                                 .show(ui, |plot_ui| {
                                     plot_ui.line(
                                         Line::new(acceleration_x_points)
-                                            .name("X Acceleration")
+                                            .name("X Acceleration (m/s²)")
                                             .color(egui::Color32::from_rgb(255, 165, 0)), // Orange for X
                                     );
                                     plot_ui.line(
                                         Line::new(acceleration_y_points)
-                                            .name("Y Acceleration")
+                                            .name("Y Acceleration (m/s²)")
                                             .color(egui::Color32::from_rgb(0, 255, 255)), // Cyan for Y
                                     );
                                 });
@@ -971,16 +1299,6 @@ impl App {
                             ui.label("No data collected yet. Wait for simulation to run...");
                         }
                     });
-            }
-
-            // Legacy click-to-add when not dragging
-            if !self.simulation_paused && ctx.input(|i| i.pointer.primary_clicked()) {
-                if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
-                    let world_pos = self.screen_to_world(pos.x, pos.y);
-                    new_spawn_position[0] = world_pos[0];
-                    new_spawn_position[1] = world_pos[1];
-                    should_add_particle = true;
-                }
             }
         });
 
@@ -994,11 +1312,48 @@ impl App {
         self.vector_display_multiplier = new_vector_multiplier;
         self.walls_enabled = new_walls_enabled;
         self.wall_bounce = new_wall_bounce;
+        self.gravity_strength = gravity_strength_local;
+
+        // Handle click-to-add particles only if UI is not using pointer input
+        if !simulation_paused {
+            // Check if egui wants pointer input (hovering over UI elements)
+            if !self.egui_ctx.wants_pointer_input() {
+                if self.egui_ctx.input(|i| i.pointer.primary_clicked()) {
+                    if let Some(pos) = self.egui_ctx.input(|i| i.pointer.interact_pos()) {
+                        // Convert screen position to world position
+                        new_spawn_position[0] = pos.x;
+                        new_spawn_position[1] = pos.y;
+                        should_add_particle = true;
+                    }
+                }
+            }
+        }
+
+        // Handle configuration save/load
+        if save_config_clicked {
+            let _ = self.save_config();
+        }
+        if load_config_clicked {
+            let _ = self.load_config();
+        }
+
+        // Update performance metrics
+        let now = Instant::now();
+        let frame_dt = (now - self.last_update).as_secs_f32().min(1.0 / 30.0);
+        self.update_performance_metrics(frame_dt);
 
         if should_add_particle {
+            // Convert screen coordinates to world coordinates if needed
+            if new_spawn_position[0] > 1.0 || new_spawn_position[1] > 1.0 {
+                // This looks like screen coordinates, convert them
+                let world_pos = self.screen_to_world(new_spawn_position[0], new_spawn_position[1]);
+                new_spawn_position[0] = world_pos[0];
+                new_spawn_position[1] = world_pos[1];
+            }
+
             self.particle_system.add_particle_at(
-                self.spawn_position[0],
-                self.spawn_position[1],
+                new_spawn_position[0],
+                new_spawn_position[1],
                 self.particle_mass,
             );
 
@@ -1010,7 +1365,6 @@ impl App {
                 self.waiting_for_first_particle = false;
             }
         }
-
         if should_clear {
             let was_showing_graphs = self.show_graphs;
             self.particle_system.clear();

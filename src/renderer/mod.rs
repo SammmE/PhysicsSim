@@ -281,14 +281,16 @@ impl ParticleRenderer {
     }
 
     pub fn update_uniforms(&self, queue: &wgpu::Queue, width: f32, height: f32) {
-        // Simple orthographic projection
+        // Orthographic projection for SI units (meters)
         let aspect = width / height;
-        let scale = 0.01; // Adjust this to change the world scale
+        // Create a world space of approximately 20m wide x 15m tall (matching main.rs)
+        let world_height = 15.0; // meters
+        let world_width = world_height * aspect;
 
-        let left = -aspect / scale;
-        let right = aspect / scale;
-        let bottom = -1.0 / scale;
-        let top = 1.0 / scale;
+        let left = -world_width / 2.0;
+        let right = world_width / 2.0;
+        let bottom = -world_height / 2.0;
+        let top = world_height / 2.0;
 
         #[rustfmt::skip]
         let projection = [

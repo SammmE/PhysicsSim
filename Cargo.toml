@@ -1,7 +1,13 @@
 [package]
 name = "PhysicsSim"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+authors = ["SammmE"]
+description = "Advanced 2D physics simulation with real-time particle tracking and graphing"
+license = "MIT"
+repository = "https://github.com/SammmE/PhysicsSim"
+keywords = ["physics", "simulation", "particles", "graphics"]
+categories = ["science", "simulation", "visualization"]
 
 [dependencies]
 wgpu = "0.20"
@@ -15,3 +21,6 @@ bytemuck = { version = "1.16", features = ["derive"] }
 rand = "0.8"
 env_logger = "0.11"
 log = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rfd = "0.14"
