@@ -1,0 +1,77 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Rust project",
+            "type": "shell",
+            "command": "cargo build",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build"
+        },
+        {
+            "label": "Run PhysicsSim",
+            "type": "shell",
+            "command": "cargo run",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "run"
+        },
+        {
+            "label": "Rebuild after UI overlay",
+            "type": "shell",
+            "command": "cargo build",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build"
+        },
+        {
+            "label": "Cargo build after pruning deps",
+            "type": "shell",
+            "command": "cargo build",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build"
+        },
+        {
+            "label": "Final build",
+            "type": "shell",
+            "command": "cargo build",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build"
+        },
+        {
+            "label": "Run app to reproduce spawn issue",
+            "type": "shell",
+            "command": "cargo run",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "run"
+        },
+        {
+            "label": "Build after vertex layout fix",
+            "type": "shell",
+            "command": "cargo build",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build"
+        },
+        {
+            "label": "Run after fixes",
+            "type": "shell",
+            "command": "cargo run",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "run"
+        }
+    ]
+}
