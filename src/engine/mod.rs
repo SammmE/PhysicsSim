@@ -89,23 +89,26 @@ impl ParticleSystem {
         }
     }
 
-    pub fn add_particle_at(&mut self, x: f32, y: f32, mass: f32) {
-        // Only add if we haven't reached reasonable limit for performance
-        if self.particles.len() < 10000 {
+    pub fn add_particle_at(&mut self, x: f32, y: f32, mass: f32, limit: Option<usize>) {
+        // Only add if we haven't reached the specified limit
+        let max_particles = limit.unwrap_or(usize::MAX);
+        if self.particles.len() < max_particles {
             self.particles.push(Particle::new(x, y, mass));
         }
     }
 
-    pub fn add_particle_with_velocity(&mut self, x: f32, y: f32, vx: f32, vy: f32, mass: f32) {
-        if self.particles.len() < 10000 {
+    pub fn add_particle_with_velocity(&mut self, x: f32, y: f32, vx: f32, vy: f32, mass: f32, limit: Option<usize>) {
+        let max_particles = limit.unwrap_or(usize::MAX);
+        if self.particles.len() < max_particles {
             let mut particle = Particle::new(x, y, mass);
             particle.velocity = Vector2f::new(vx, vy);
             self.particles.push(particle);
         }
     }
 
-    pub fn add_particle_with_acceleration(&mut self, x: f32, y: f32, ax: f32, ay: f32, mass: f32) {
-        if self.particles.len() < 10000 {
+    pub fn add_particle_with_acceleration(&mut self, x: f32, y: f32, ax: f32, ay: f32, mass: f32, limit: Option<usize>) {
+        let max_particles = limit.unwrap_or(usize::MAX);
+        if self.particles.len() < max_particles {
             let mut particle = Particle::new(x, y, mass);
             particle.acceleration = Vector2f::new(ax, ay);
             self.particles.push(particle);
@@ -126,5 +129,71 @@ impl ParticleSystem {
 
     pub fn particle_count(&self) -> usize {
         self.particles.len()
+    }
+
+    /// Apply gravity force to all particles
+    pub fn apply_gravity(&mut self, gravity_force: Vector2f, gravity_strength: f32, dt: f32) {
+        let scaled_gravity = Vector2f::new(
+            gravity_force.x * gravity_strength,
+            gravity_force.y * gravity_strength,
+        );
+
+        for particle in &mut self.particles {
+            particle.apply_force(
+                Vector2f::new(
+                    scaled_gravity.x * particle.mass,
+                    scaled_gravity.y * particle.mass,
+                ),
+                dt,
+            );
+        }
+    }
+
+    /// Apply wall constraints to all particles
+    pub fn apply_wall_constraints(
+        &mut self,
+        world_bounds: [f32; 4],
+        wall_bounce: bool,
+        wall_damping: f32,
+    ) {
+        let [left, right, bottom, top] = world_bounds;
+
+        for particle in &mut self.particles {
+            if particle.position.x < left {
+                if wall_bounce {
+                    particle.position.x = left;
+                    particle.velocity.x = -particle.velocity.x * wall_damping;
+                } else {
+                    particle.position.x = left;
+                    particle.velocity.x = 0.0;
+                }
+            } else if particle.position.x > right {
+                if wall_bounce {
+                    particle.position.x = right;
+                    particle.velocity.x = -particle.velocity.x * wall_damping;
+                } else {
+                    particle.position.x = right;
+                    particle.velocity.x = 0.0;
+                }
+            }
+
+            if particle.position.y < bottom {
+                if wall_bounce {
+                    particle.position.y = bottom;
+                    particle.velocity.y = -particle.velocity.y * wall_damping;
+                } else {
+                    particle.position.y = bottom;
+                    particle.velocity.y = 0.0;
+                }
+            } else if particle.position.y > top {
+                if wall_bounce {
+                    particle.position.y = top;
+                    particle.velocity.y = -particle.velocity.y * wall_damping;
+                } else {
+                    particle.position.y = top;
+                    particle.velocity.y = 0.0;
+                }
+            }
+        }
     }
 }
