@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PhysicsSim - Advanced 2D Physics Simulation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #ffffff;
+            overflow: hidden;
+        }
+
+        #loading {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            z-index: 1000;
+        }
+
+        #loading h1 {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+            background: linear-gradient(45deg, #00d4ff, #7b2ff7);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        #loading p {
+            font-size: 1.2rem;
+            color: #888;
+            margin-bottom: 2rem;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 5px solid rgba(255, 255, 255, 0.1);
+            border-top-color: #00d4ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        #error {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 0, 0, 0.1);
+            border: 2px solid #ff0000;
+            padding: 2rem;
+            border-radius: 10px;
+            max-width: 600px;
+            z-index: 1001;
+        }
+
+        #error h2 {
+            color: #ff6b6b;
+            margin-bottom: 1rem;
+        }
+
+        #error p {
+            color: #ffcccc;
+            line-height: 1.6;
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        #info {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 15px;
+            border-radius: 5px;
+            font-size: 0.9rem;
+            color: #aaa;
+            z-index: 100;
+        }
+
+        #info a {
+            color: #00d4ff;
+            text-decoration: none;
+        }
+
+        #info a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">
+        <h1>PhysicsSim</h1>
+        <p>Loading physics simulation engine...</p>
+        <div class="spinner"></div>
+    </div>
+
+    <div id="error">
+        <h2>Error Loading Application</h2>
+        <p id="error-message"></p>
+    </div>
+
+    <div id="info">
+        <strong>PhysicsSim v0.2.0</strong> | 
+        <a href="https://github.com/SammmE/PhysicsSim" target="_blank">GitHub</a> |
+        WebGPU-powered physics simulation
+    </div>
+
+    <script type="module">
+        // Check for WebGPU support
+        async function checkWebGPUSupport() {
+            if (!navigator.gpu) {
+                throw new Error("WebGPU is not supported in your browser. Please use Chrome 113+, Edge 113+, or another browser with WebGPU support.");
+            }
+            
+            const adapter = await navigator.gpu.requestAdapter();
+            if (!adapter) {
+                throw new Error("Failed to get WebGPU adapter. Your GPU may not be compatible with WebGPU.");
+            }
+            
+            return true;
+        }
+
+        // Initialize the WebAssembly application
+        async function init() {
+            try {
+                // Check WebGPU support first
+                await checkWebGPUSupport();
+                
+                // Import and initialize the WASM module
+                const { default: init_wasm } = await import('./pkg/PhysicsSim.js');
+                await init_wasm();
+                
+                // Hide loading screen
+                document.getElementById('loading').style.display = 'none';
+                
+                console.log('PhysicsSim initialized successfully!');
+            } catch (error) {
+                console.error('Failed to initialize:', error);
+                
+                // Show error message
+                document.getElementById('loading').style.display = 'none';
+                const errorDiv = document.getElementById('error');
+                const errorMessage = document.getElementById('error-message');
+                errorDiv.style.display = 'block';
+                errorMessage.textContent = error.message || 'Unknown error occurred';
+            }
+        }
+
+        // Start initialization
+        init();
+    </script>
+</body>
+</html>

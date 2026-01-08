@@ -40,6 +40,7 @@ pub struct ConfigManager;
 
 impl ConfigManager {
     /// Save configuration to a JSON file via file dialog
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn save_config(config: &SimulationConfig) -> Result<(), Box<dyn Error>> {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("JSON", &["json"])
@@ -53,6 +54,7 @@ impl ConfigManager {
     }
 
     /// Load configuration from a JSON file via file dialog
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load_config() -> Result<Option<SimulationConfig>, Box<dyn Error>> {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("JSON", &["json"])
