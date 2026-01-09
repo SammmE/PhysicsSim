@@ -2,7 +2,7 @@
   "name": "physics-sim",
   "version": "1.0.0",
   "scripts": {
-    "build": "wasm-pack build --target web --out-dir pkg --release"
+    "build": "source $HOME/.cargo/env && wasm-pack build --target web --out-dir pkg --release"
   },
   "devDependencies": {
     "wasm-pack": "^0.12.1"
