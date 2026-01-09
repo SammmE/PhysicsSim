@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PhysicsSim</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+        background-color: #111;
+        color: white;
+        font-family: sans-serif;
+      }
+      /* Force canvas to take up space immediately to prevent 0-size swapchain errors */
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+      #error-msg {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        color: #ff5555;
+        background: rgba(0, 0, 0, 0.8);
+        padding: 10px;
+        display: none;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="error-msg"></div>
+
+    <script type="module">
+      import init from "./pkg/PhysicsSim.js";
+
+      async function run() {
+        // 1. Check for WebGPU support first
+        if (!navigator.gpu) {
+          showError(
+            "WebGPU is not supported. Try using Chrome/Edge on Desktop."
+          );
+          return;
+        }
+
+        try {
+          // 2. Initialize the WASM module
+          await init();
+        } catch (e) {
+          // 3. THE FIX: Ignore the specific "control flow" error
+          if (e.message.includes("Using exceptions for control flow")) {
+            console.log(
+              "Winit control flow exception caught (this is normal)."
+            );
+          } else {
+            // Only show real errors
+            console.error(e);
+            showError(`Failed to initialize: ${e.message}`);
+          }
+        }
+      }
+
+      function showError(msg) {
+        const el = document.getElementById("error-msg");
+        el.style.display = "block";
+        el.innerText = msg;
+      }
+
+      run();
+    </script>
+  </body>
+</html>

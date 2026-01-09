@@ -1,4 +1,4 @@
-use std::time::Instant;
+use web_time::Instant;
 
 /// Performance monitoring functionality
 #[derive(Debug)]
@@ -9,7 +9,7 @@ pub struct PerformanceMonitor {
     pub physics_time: f32,
     pub ui_time: f32,
     pub memory_usage: usize,
-    
+
     // Internal tracking
     frame_count: u32,
     fps_timer: Instant,
@@ -35,7 +35,7 @@ impl PerformanceMonitor {
 
     pub fn update_metrics(&mut self, _frame_time: f32) {
         self.frame_count += 1;
-        
+
         if self.fps_timer.elapsed().as_secs_f32() >= 1.0 {
             self.current_fps = self.frame_count as f32 / self.fps_timer.elapsed().as_secs_f32();
             self.frame_count = 0;
@@ -47,7 +47,7 @@ impl PerformanceMonitor {
         // Estimate memory usage based on particles and other data structures
         const PARTICLE_SIZE: usize = std::mem::size_of::<crate::engine::Particle>();
         const BASE_MEMORY: usize = 1024 * 1024; // 1MB base
-        
+
         self.memory_usage = BASE_MEMORY + (particle_count * PARTICLE_SIZE);
     }
 
